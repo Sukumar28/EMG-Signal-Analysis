@@ -1,0 +1,6 @@
+{
+  "name": "EMG INTELLIGENCE",
+  "description": "Intelligent Human Movement Recognition Using Electromyography Signals — biomedical signal processing, feature extraction, machine learning classification, and interactive waveform visualization platform.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
