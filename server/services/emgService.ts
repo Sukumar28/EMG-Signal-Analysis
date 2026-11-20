@@ -38,11 +38,18 @@ import {
   FEATURE_NAMES,
   parseCsvText,
   type PreprocessingConfig,
+  type ProcessedSignalResult,
   runSignalProcessingPipeline,
 } from '../signal_processing/pipeline.ts';
-import { ensureSampleDatasets, SAMPLE_DATA_DIR } from './sampleGenerator.ts';
+import {
+  ALL_MUSCLE_ACTIONS,
+  DEFAULT_EMG_CHANNELS,
+  ensureSampleDatasets,
+  SAMPLE_DATA_DIR,
+} from './sampleGenerator.ts';
 
 const MAX_FILE_SIZE_BYTES = 25 * 1024 * 1024; // 25 MB
+const DEFAULT_CLASS_NAMES = ALL_MUSCLE_ACTIONS.map((a) => a.label);
 
 let cachedBundle: { path: string; bundle: TrainedModelBundle } | null = null;
 
@@ -62,6 +69,10 @@ export function getActiveModelBundle(): {
   const loaded = loadModelBundle(latest.artifact_path);
   if (!loaded) {
     return { bundle: null, activeModelType: activeType, runId: null };
+  }
+  // Backward compatibility if an older single-channel artifact exists
+  if (!loaded.signal_columns) {
+    loaded.signal_columns = ['emg_ch1_mV'];
   }
   cachedBundle = { path: latest.artifact_path, bundle: loaded };
   return { bundle: loaded, activeModelType: activeType, runId: latest.id };
@@ -85,7 +96,6 @@ export function handleCsvUpload(originalFilename: string, rawBuffer: Buffer) {
 
   const uploadId = `upl_${crypto.randomUUID().slice(0, 12)}`;
   const storedPath = path.join(UPLOAD_DIR, `${uploadId}_${safeOriginal}`);
-  // Preserve original uploaded CSV untouched on disk
   fs.writeFileSync(storedPath, rawBuffer);
 
   const uploadedAt = new Date().toISOString();
@@ -104,7 +114,6 @@ export function handleCsvUpload(originalFilename: string, rawBuffer: Buffer) {
     uploaded_at: uploadedAt,
   });
 
-  // Detect unique movement labels if label column exists
   let detectedLabels: string[] = [];
   if (parsed.labelColumn) {
     const labelSet = new Set<string>();
@@ -145,10 +154,44 @@ export function loadSampleAsUpload(sampleFilename: string) {
   return handleCsvUpload(safeName, buf);
 }
 
+/**
+ * Process one or more EMG channels identically and concatenate per-window 7-feature vectors.
+ */
+function processMultiChannelSegment(
+  rows: Record<string, string>[],
+  signalColumns: string[],
+  prepConfig: PreprocessingConfig,
+  timestamps?: number[]
+): {
+  primaryProcessed: ProcessedSignalResult;
+  combinedFeatureVectors: number[][];
+} {
+  const results: ProcessedSignalResult[] = signalColumns.map((col) => {
+    const { values, missingCount } = extractNumericSeries(rows, col);
+    return runSignalProcessingPipeline(values, missingCount, prepConfig, timestamps);
+  });
+
+  const windowCount = Math.min(...results.map((r) => r.feature_vectors.length));
+  const combinedFeatureVectors: number[][] = [];
+  for (let w = 0; w < windowCount; w++) {
+    const vec: number[] = [];
+    for (const res of results) {
+      vec.push(...res.feature_vectors[w]);
+    }
+    combinedFeatureVectors.push(vec);
+  }
+
+  return {
+    primaryProcessed: results[0],
+    combinedFeatureVectors,
+  };
+}
+
 export interface TrainRequestOptions {
   upload_id?: string;
   use_bundled_dataset?: boolean;
   signal_column?: string;
+  signal_columns?: string[];
   label_column?: string;
   preprocessing?: Partial<PreprocessingConfig>;
   test_split_ratio?: number;
@@ -158,11 +201,7 @@ export interface TrainRequestOptions {
 }
 
 /**
- * Genuine supervised ML training pipeline:
- * Reads real labelled EMG CSV -> groups contiguous segments by movement label ->
- * applies exact DSP pipeline per segment -> extracts 7 EMG features per window ->
- * stratified block train/test split (no window leakage) -> fits StandardScaler on train only ->
- * trains Random Forest AND RBF-kernel SVM -> evaluates on held-out test split -> saves model bundle + SQLite run.
+ * Genuine supervised ML training pipeline supporting single or multi-channel sEMG across all muscle actions.
  */
 export function trainModels(options: TrainRequestOptions) {
   const startMs = performance.now();
@@ -192,9 +231,19 @@ export function trainModels(options: TrainRequestOptions) {
     );
   }
 
-  const signalCol = options.signal_column || parsed.numericColumns[0];
-  if (!signalCol || !parsed.headers.includes(signalCol)) {
-    throw new Error('Please specify a valid numeric EMG signal column for training.');
+  let signalCols: string[];
+  if (options.signal_columns && options.signal_columns.length > 0) {
+    signalCols = options.signal_columns.filter((c) => parsed.headers.includes(c));
+  } else if (options.use_bundled_dataset) {
+    signalCols = [...DEFAULT_EMG_CHANNELS].filter((c) => parsed.headers.includes(c));
+  } else if (options.signal_column && parsed.headers.includes(options.signal_column)) {
+    signalCols = [options.signal_column];
+  } else {
+    signalCols = parsed.numericColumns.slice(0, 4);
+  }
+
+  if (signalCols.length === 0) {
+    throw new Error('Please specify at least one valid numeric EMG signal column for training.');
   }
 
   const prepConfig: PreprocessingConfig = {
@@ -239,11 +288,14 @@ export function trainModels(options: TrainRequestOptions) {
 
   for (const seg of segments) {
     if (seg.rows.length < 20) continue;
-    const { values, missingCount } = extractNumericSeries(seg.rows, signalCol);
-    const processed = runSignalProcessingPipeline(values, missingCount, prepConfig);
-    effectiveConfig = processed.effective_config;
+    const { primaryProcessed, combinedFeatureVectors } = processMultiChannelSegment(
+      seg.rows,
+      signalCols,
+      prepConfig
+    );
+    effectiveConfig = primaryProcessed.effective_config;
     const clsIdx = classToIndex.get(seg.label)!;
-    for (const vec of processed.feature_vectors) {
+    for (const vec of combinedFeatureVectors) {
       allX.push(vec);
       allY.push(clsIdx);
     }
@@ -264,8 +316,8 @@ export function trainModels(options: TrainRequestOptions) {
   const XTestZ = transformScaler(XTest, scaler);
 
   // Train Random Forest baseline
-  const nEstimators = Math.min(120, Math.max(15, options.n_estimators ?? 60));
-  const rfModel = trainRandomForest(XTrainZ, yTrain, uniqueClasses, nEstimators, 10, 42);
+  const nEstimators = Math.min(120, Math.max(20, options.n_estimators ?? 60));
+  const rfModel = trainRandomForest(XTrainZ, yTrain, uniqueClasses, nEstimators, 12, 42);
   const rfTestProba = predictRandomForestProba(rfModel, XTestZ);
   const rfTestPred = rfTestProba.map((p) => p.indexOf(Math.max(...p)));
   const rfMetrics = computeEvaluationMetrics(yTest, rfTestPred, uniqueClasses, 'random_forest');
@@ -277,7 +329,6 @@ export function trainModels(options: TrainRequestOptions) {
   const svmTestPred = svmTestProba.map((p) => p.indexOf(Math.max(...p)));
   const svmMetrics = computeEvaluationMetrics(yTest, svmTestPred, uniqueClasses, 'svm');
 
-  // Compute OOD statistics on standardized training feature space
   const ood = computeOodStats(XTrainZ, yTrain, uniqueClasses.length);
 
   const existingRuns = listModelRuns();
@@ -286,12 +337,18 @@ export function trainModels(options: TrainRequestOptions) {
   const trainedAt = new Date().toISOString();
   const activeModelType = options.preferred_model === 'svm' ? 'svm' : 'random_forest';
 
+  const expandedFeatureNames =
+    signalCols.length === 1
+      ? [...FEATURE_NAMES]
+      : signalCols.flatMap((col) => FEATURE_NAMES.map((f) => `${col}:${f}`));
+
   const bundle: TrainedModelBundle = {
     model_version: modelVersion,
     trained_at: trainedAt,
     dataset_name: datasetName,
     classes: uniqueClasses,
-    feature_names: [...FEATURE_NAMES],
+    signal_columns: signalCols,
+    feature_names: expandedFeatureNames,
     scaler,
     class_centroids_z: ood.centroids,
     ood_distance_threshold: ood.threshold,
@@ -330,7 +387,7 @@ export function trainModels(options: TrainRequestOptions) {
     model_version: modelVersion,
     trained_at: trainedAt,
     dataset_name: datasetName,
-    signal_column: signalCol,
+    signal_columns: signalCols,
     label_column: labelCol,
     classes: uniqueClasses,
     train_windows: XTrain.length,
@@ -346,16 +403,13 @@ export function trainModels(options: TrainRequestOptions) {
 export interface AnalyzeRequestOptions {
   upload_id: string;
   signal_column: string;
+  signal_columns?: string[];
   model_type?: 'random_forest' | 'svm';
   preprocessing?: Partial<PreprocessingConfig>;
 }
 
 /**
- * Full inference pipeline:
- * Load original uploaded CSV -> run DSP pipeline -> extract features ->
- * require real trained model -> run inference across all windows ->
- * compute mean class probability distribution + OOD reliability check ->
- * persist to SQLite -> return full prediction + Plotly visualization payloads.
+ * Full single or multi-channel inference pipeline.
  */
 export function analyzeSignal(options: AnalyzeRequestOptions) {
   const startMs = performance.now();
@@ -374,9 +428,30 @@ export function analyzeSignal(options: AnalyzeRequestOptions) {
     );
   }
 
-  const { values, missingCount } = extractNumericSeries(parsed.rows, options.signal_column);
+  const { bundle, activeModelType } = getActiveModelBundle();
+  const baseConfig: PreprocessingConfig = {
+    ...(bundle?.preprocessing_config ?? DEFAULT_PREPROCESSING_CONFIG),
+    ...(options.preprocessing ?? {}),
+  };
 
-  // Extract optional timestamps
+  // Determine active channels for inference
+  let selectedCols: string[];
+  if (options.signal_columns && options.signal_columns.length > 0) {
+    selectedCols = options.signal_columns.filter((c) => parsed.headers.includes(c));
+  } else if (bundle && bundle.signal_columns.length > 1) {
+    const exactMatch = bundle.signal_columns.every((c) => parsed.headers.includes(c));
+    if (exactMatch) {
+      selectedCols = bundle.signal_columns;
+    } else if (parsed.numericColumns.length >= bundle.signal_columns.length) {
+      selectedCols = parsed.numericColumns.slice(0, bundle.signal_columns.length);
+    } else {
+      selectedCols = [options.signal_column];
+    }
+  } else {
+    selectedCols = [options.signal_column];
+  }
+
+  // Ensure primary visualization channel is included
   let timestamps: number[] | undefined;
   if (parsed.timestampColumn && parsed.headers.includes(parsed.timestampColumn)) {
     const ts = parsed.rows.map((r) => Number(r[parsed.timestampColumn!]));
@@ -385,21 +460,19 @@ export function analyzeSignal(options: AnalyzeRequestOptions) {
     }
   }
 
-  const { bundle, activeModelType } = getActiveModelBundle();
-  const baseConfig: PreprocessingConfig = {
-    ...(bundle?.preprocessing_config ?? DEFAULT_PREPROCESSING_CONFIG),
-    ...(options.preprocessing ?? {}),
-  };
+  // Run DSP on primary visualization channel first
+  const primarySeries = extractNumericSeries(parsed.rows, options.signal_column);
+  const processed = runSignalProcessingPipeline(
+    primarySeries.values,
+    primarySeries.missingCount,
+    baseConfig,
+    timestamps
+  );
 
-  const processed = runSignalProcessingPipeline(values, missingCount, baseConfig, timestamps);
-
-  // Strict requirement: If model is unavailable, return explicit MODEL NOT TRAINED state
-  // (still returning processed waveforms so user can inspect preprocessing, but refusing fake prediction!)
   const rawPlot = downsampleForPlot(processed.time_axis, processed.raw_signal, 1800);
   const filteredPlot = downsampleForPlot(processed.time_axis, processed.filtered_signal, 1800);
   const normalizedPlot = downsampleForPlot(processed.time_axis, processed.normalized_signal, 1800);
 
-  // Build amplitude histogram bins on filtered signal
   const histogramSamples =
     processed.filtered_signal.length > 4000
       ? processed.filtered_signal.filter((_, idx) => idx % Math.ceil(processed.filtered_signal.length / 4000) === 0)
@@ -434,8 +507,23 @@ export function analyzeSignal(options: AnalyzeRequestOptions) {
     };
   }
 
+  // Build feature vectors matching trained model dimensionality
+  const expectedChannels = bundle.signal_columns.length;
+  if (selectedCols.length !== expectedChannels) {
+    throw new Error(
+      `The active trained model (${bundle.model_version}) expects ${expectedChannels} EMG channel(s) (${bundle.signal_columns.join(
+        ', '
+      )}), but ${selectedCols.length} channel(s) were selected. Select ${expectedChannels} matching channels or retrain the model for ${selectedCols.length} channel(s).`
+    );
+  }
+
+  const { combinedFeatureVectors } =
+    selectedCols.length === 1 && selectedCols[0] === options.signal_column
+      ? { combinedFeatureVectors: processed.feature_vectors }
+      : processMultiChannelSegment(parsed.rows, selectedCols, baseConfig, timestamps);
+
   const chosenModelType = options.model_type ?? activeModelType;
-  const Xz = transformScaler(processed.feature_vectors, bundle.scaler);
+  const Xz = transformScaler(combinedFeatureVectors, bundle.scaler);
 
   const windowProbas =
     chosenModelType === 'svm'
@@ -451,7 +539,6 @@ export function analyzeSignal(options: AnalyzeRequestOptions) {
     avgProba[c] /= Math.max(1, windowProbas.length);
   }
 
-  // Compute OOD distance across windows
   const oodDistances = Xz.map((z) => minCentroidRmsDistance(z, bundle.class_centroids_z));
   const meanOodDistance =
     oodDistances.reduce((a, b) => a + b, 0) / Math.max(1, oodDistances.length);
@@ -471,7 +558,6 @@ export function analyzeSignal(options: AnalyzeRequestOptions) {
     }))
     .sort((a, b) => b.probability - a.probability);
 
-  // Reliability / Out-of-Distribution Guard
   let reliabilityWarning: string | null = null;
   let status = 'Completed';
 
@@ -482,12 +568,12 @@ export function analyzeSignal(options: AnalyzeRequestOptions) {
       2
     )}). Input amplitude or spectral profile diverges significantly from the trained EMG dataset — treat prediction with caution.`;
     status = 'Low Reliability';
-  } else if (confidence < 55) {
+  } else if (confidence < 45) {
     reliabilityWarning = `Low classification confidence (${confidence.toFixed(
       1
     )}%). The EMG signal shows ambiguous multi-class overlap across windows and cannot be definitively assigned.`;
     status = 'Low Confidence';
-  } else if (processed.signal_quality.overall_grade === 'Poor') {
+  } else if (processed.signal_quality.overall_grade === 'Poor' && !predictedMovement.toLowerCase().includes('rest')) {
     reliabilityWarning = `Poor signal quality detected (${processed.signal_quality.notes.join(
       ' '
     )}). Verify electrode contact or sampling frequency.`;
@@ -496,20 +582,24 @@ export function analyzeSignal(options: AnalyzeRequestOptions) {
   const processingTimeMs = Number((performance.now() - startMs).toFixed(1));
   const analysisId = `anl_${crypto.randomUUID().slice(0, 12)}`;
   const timestampIso = new Date().toISOString();
+  const channelDescriptor =
+    selectedCols.length > 1
+      ? `${options.signal_column} (+${selectedCols.length - 1} ch)`
+      : options.signal_column;
 
   insertAnalysis({
     id: analysisId,
     upload_id: upload.id,
     filename: upload.original_filename,
     uploaded_at: timestampIso,
-    channel: options.signal_column,
+    channel: channelDescriptor,
     sampling_frequency: processed.effective_config.sampling_frequency,
     predicted_movement: predictedMovement,
     confidence,
     model_version: bundle.model_version,
     model_type: chosenModelType,
     status,
-    windows_analyzed: processed.windows.length,
+    windows_analyzed: combinedFeatureVectors.length,
     processing_time_ms: processingTimeMs,
     signal_quality_json: JSON.stringify(processed.signal_quality),
     reliability_warning: reliabilityWarning,
@@ -525,12 +615,13 @@ export function analyzeSignal(options: AnalyzeRequestOptions) {
     upload_id: upload.id,
     filename: upload.original_filename,
     uploaded_at: timestampIso,
-    channel: options.signal_column,
+    channel: channelDescriptor,
+    channels_used: selectedCols,
     sampling_frequency: processed.effective_config.sampling_frequency,
     predicted_movement: predictedMovement,
     confidence,
     probabilities,
-    windows_analyzed: processed.windows.length,
+    windows_analyzed: combinedFeatureVectors.length,
     model_version: bundle.model_version,
     model_type: chosenModelType,
     status,
@@ -568,7 +659,8 @@ export function getModelPerformancePayload() {
       message: 'MODEL NOT TRAINED – Please configure a labelled EMG training dataset.',
       active_model_type: null,
       model_version: null,
-      classes: ['Hand Open', 'Hand Close', 'Wrist Flexion', 'Wrist Extension'],
+      classes: DEFAULT_CLASS_NAMES,
+      signal_columns: [...DEFAULT_EMG_CHANNELS],
       rf_metrics: null,
       svm_metrics: null,
       preprocessing_config: DEFAULT_PREPROCESSING_CONFIG,
@@ -584,6 +676,7 @@ export function getModelPerformancePayload() {
     trained_at: bundle.trained_at,
     dataset_name: bundle.dataset_name,
     classes: bundle.classes,
+    signal_columns: bundle.signal_columns,
     feature_names: bundle.feature_names,
     train_windows: bundle.train_windows,
     test_windows: bundle.test_windows,
@@ -642,14 +735,13 @@ export function getDashboardPayload() {
     kpis: {
       total_signals_analyzed: stats.total_signals_analyzed,
       recognized_movements: stats.recognized_movements,
-      available_movement_classes: bundle ? bundle.classes.length : 4,
-      movement_class_names: bundle
-        ? bundle.classes
-        : ['Hand Open', 'Hand Close', 'Wrist Flexion', 'Wrist Extension'],
+      available_movement_classes: bundle ? bundle.classes.length : DEFAULT_CLASS_NAMES.length,
+      movement_class_names: bundle ? bundle.classes : DEFAULT_CLASS_NAMES,
       model_accuracy: modelAccuracy,
       model_trained: Boolean(bundle),
       model_version: bundle?.model_version ?? null,
       active_model_type: bundle ? activeModelType : null,
+      expected_channels: bundle ? bundle.signal_columns : [...DEFAULT_EMG_CHANNELS],
     },
     movement_distribution: stats.movement_distribution,
     activity_timeline: stats.activity_timeline,

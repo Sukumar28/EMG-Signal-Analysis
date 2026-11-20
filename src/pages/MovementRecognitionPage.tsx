@@ -240,7 +240,7 @@ export default function MovementRecognitionPage({
             </p>
             <div className="mt-3">
               <PlotlyChart
-                height={230}
+                height={Math.max(240, Math.min(390, probabilities.length * 26 + 56))}
                 data={[
                   {
                     type: 'bar',
@@ -264,8 +264,8 @@ export default function MovementRecognitionPage({
                   },
                 ]}
                 layout={{
-                  margin: { t: 10, r: 48, b: 36, l: 120 },
-                  xaxis: { title: { text: 'Probability (%)' }, range: [0, 112] },
+                  margin: { t: 8, r: 52, b: 36, l: 132 },
+                  xaxis: { title: { text: 'Probability (%)' }, range: [0, 114] },
                   yaxis: { automargin: true },
                 }}
               />

@@ -167,6 +167,42 @@ export default function AboutProjectPage() {
         </div>
       </section>
 
+      {/* Supported 12-Action Neuromuscular Taxonomy */}
+      <section className="rounded-xl border border-slate-200 bg-white">
+        <div className="border-b border-slate-200 px-6 py-4">
+          <h2 className="text-base font-semibold text-[#0F2544]">
+            Supported Upper-Limb Muscle Actions (12-Class Taxonomy)
+          </h2>
+          <p className="text-xs text-slate-500">
+            4-channel anatomical sEMG array: Ch1 Forearm Flexor · Ch2 Forearm Extensor · Ch3 Pronator/Ulnar-Radial · Ch4 Biceps Brachii
+          </p>
+        </div>
+        <div className="grid grid-cols-1 gap-3 p-6 sm:grid-cols-2 lg:grid-cols-3">
+          {[
+            { name: 'Rest (Baseline)', group: 'Baseline', muscle: 'Relaxed tonic resting floor across all 4 sites' },
+            { name: 'Hand Open', group: 'Hand & Fingers', muscle: 'Extensor Digitorum & Abductor Pollicis Longus' },
+            { name: 'Hand Close', group: 'Hand & Fingers', muscle: 'Flexor Digitorum Superficialis & Profundus' },
+            { name: 'Pinch Grip', group: 'Hand & Fingers', muscle: 'Flexor Pollicis Longus & First Dorsal Interosseous' },
+            { name: 'Pointing Index', group: 'Hand & Fingers', muscle: 'Extensor Indicis & Selective Flexor Digitorum' },
+            { name: 'Wrist Flexion', group: 'Wrist & Forearm', muscle: 'Flexor Carpi Radialis & Flexor Carpi Ulnaris' },
+            { name: 'Wrist Extension', group: 'Wrist & Forearm', muscle: 'Extensor Carpi Radialis Longus/Brevis & Ulnaris' },
+            { name: 'Wrist Pronation', group: 'Wrist & Forearm', muscle: 'Pronator Teres & Pronator Quadratus' },
+            { name: 'Wrist Supination', group: 'Wrist & Forearm', muscle: 'Supinator & Biceps Brachii Synergy' },
+            { name: 'Radial Deviation', group: 'Wrist & Forearm', muscle: 'Flexor & Extensor Carpi Radialis' },
+            { name: 'Ulnar Deviation', group: 'Wrist & Forearm', muscle: 'Flexor & Extensor Carpi Ulnaris' },
+            { name: 'Elbow Flexion', group: 'Upper Limb', muscle: 'Biceps Brachii, Brachialis & Brachioradialis' },
+          ].map((a) => (
+            <div key={a.name} className="rounded-lg border border-slate-200 bg-slate-50/60 p-3.5">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs font-semibold text-slate-900">{a.name}</span>
+                <span className="font-mono text-[10px] text-teal-700">{a.group}</span>
+              </div>
+              <p className="mt-1 text-xs text-slate-600">{a.muscle}</p>
+            </div>
+          ))}
+        </div>
+      </section>
+
       {/* Applications, Future Enhancements & Deployment Architecture */}
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
         <section className="rounded-xl border border-slate-200 bg-white p-6">

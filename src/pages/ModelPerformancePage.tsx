@@ -121,7 +121,13 @@ export default function ModelPerformancePage({
       const res = await trainEmgModels({
         use_bundled_dataset: datasetSource === 'bundled',
         upload_id: datasetSource === 'custom' ? customUpload?.upload_id : undefined,
-        signal_column: datasetSource === 'custom' ? signalCol : 'emg_ch1_mV',
+        signal_column: datasetSource === 'custom' ? signalCol : undefined,
+        signal_columns:
+          datasetSource === 'custom'
+            ? customUpload && customUpload.numeric_columns.length > 1
+              ? customUpload.numeric_columns
+              : [signalCol]
+            : undefined,
         label_column: datasetSource === 'custom' ? labelCol : 'movement_label',
         test_split_ratio: testSplitPct / 100,
         n_estimators: nEstimators,
@@ -132,7 +138,7 @@ export default function ModelPerformancePage({
       onNotify(
         'success',
         `Models trained & evaluated (${res.model_version})`,
-        `Trained on ${res.train_windows} windows, evaluated on ${res.test_windows} held-out windows in ${res.training_time_ms} ms.`
+        `Trained across ${res.classes.length} muscle actions (${res.train_windows} train / ${res.test_windows} held-out test windows) in ${res.training_time_ms} ms.`
       );
       await loadPerformance();
       onModelUpdated();
@@ -180,7 +186,7 @@ export default function ModelPerformancePage({
             Model Training & Performance Evaluation
           </h1>
           <p className="mt-1 text-sm text-slate-600">
-            Supervised Random Forest and RBF Support Vector Machine training with contiguous block-stratified held-out testing to prevent sliding-window data leakage.
+            Supervised Random Forest and RBF Support Vector Machine training across all 12 human muscle actions with leakage-free block-stratified held-out testing.
           </p>
         </div>
         <div className="flex items-center gap-2 shrink-0">
@@ -190,7 +196,7 @@ export default function ModelPerformancePage({
             className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 whitespace-nowrap"
           >
             <Download className="h-3.5 w-3.5" />
-            Sample Training CSV
+            12-Action Training CSV
           </a>
           <button
             type="button"
@@ -211,7 +217,7 @@ export default function ModelPerformancePage({
             <div>
               <h2 className="text-base font-semibold text-slate-900">Supervised Model Training Pipeline</h2>
               <p className="text-xs text-slate-500">
-                Trains both Random Forest (baseline) and RBF SVM (comparison) using identical DSP & 7-feature extraction
+                Trains both Random Forest (baseline) and RBF SVM (comparison) using identical multi-channel DSP & 7-feature extraction
               </p>
             </div>
           </div>
@@ -229,7 +235,7 @@ export default function ModelPerformancePage({
                   : 'text-slate-600 hover:text-slate-900'
               }`}
             >
-              Included 4-Class sEMG Dataset
+              Included 12-Action sEMG Dataset
             </button>
             <button
               type="button"
@@ -254,13 +260,13 @@ export default function ModelPerformancePage({
             {datasetSource === 'bundled' ? (
               <div className="rounded-lg border border-slate-200 bg-slate-50/70 p-4">
                 <p className="text-xs font-semibold text-slate-900">
-                  emg_labelled_training_dataset.csv
+                  emg_labelled_training_dataset.csv (12 Muscle Actions · 4 Channels)
                 </p>
                 <p className="mt-1 text-xs leading-relaxed text-slate-600">
-                  Biophysically modeled 2-channel surface EMG dataset sampled at 1000 Hz (22,000 samples total) containing genuinely labelled trials for <strong>Hand Open</strong>, <strong>Hand Close</strong>, <strong>Wrist Flexion</strong>, and <strong>Wrist Extension</strong> with 50 Hz mains hum and baseline drift.
+                  Biophysically modeled 4-channel surface EMG dataset sampled at 1000 Hz (42,000 samples) spanning <strong>Rest (Baseline)</strong>, <strong>Hand Open</strong>, <strong>Hand Close</strong>, <strong>Pinch Grip</strong>, <strong>Pointing Index</strong>, <strong>Wrist Flexion</strong>, <strong>Wrist Extension</strong>, <strong>Wrist Pronation</strong>, <strong>Wrist Supination</strong>, <strong>Radial Deviation</strong>, <strong>Ulnar Deviation</strong>, and <strong>Elbow Flexion</strong>.
                 </p>
                 <p className="mt-2 font-mono text-[11px] text-slate-500">
-                  Signal Channel: emg_ch1_mV · Label Column: movement_label · Bandpass: 20–450 Hz · Notch: 50 Hz
+                  Channels: Flexor, Extensor, Pronator, Biceps (28 features/window) · Bandpass: 20–450 Hz · Notch: 50 Hz
                 </p>
               </div>
             ) : (
@@ -532,7 +538,7 @@ export default function ModelPerformancePage({
                 </p>
                 <div className="mt-3">
                   <PlotlyChart
-                    height={330}
+                    height={activeMetrics.classes.length > 6 ? 470 : 330}
                     data={[
                       {
                         type: 'heatmap',
@@ -549,9 +555,22 @@ export default function ModelPerformancePage({
                       },
                     ]}
                     layout={{
-                      margin: { t: 16, r: 20, b: 64, l: 110 },
-                      xaxis: { title: { text: 'Predicted Label' } },
-                      yaxis: { title: { text: 'True Label' }, autorange: 'reversed' },
+                      margin: {
+                        t: 14,
+                        r: 18,
+                        b: activeMetrics.classes.length > 6 ? 112 : 64,
+                        l: activeMetrics.classes.length > 6 ? 132 : 110,
+                      },
+                      xaxis: {
+                        title: { text: 'Predicted Label' },
+                        tickangle: activeMetrics.classes.length > 6 ? -35 : 0,
+                        automargin: true,
+                      },
+                      yaxis: {
+                        title: { text: 'True Label' },
+                        autorange: 'reversed',
+                        automargin: true,
+                      },
                       annotations: activeMetrics.confusion_matrix.flatMap((row, rIdx) =>
                         row.map((val, cIdx) => {
                           const maxVal = Math.max(1, ...activeMetrics.confusion_matrix.flat());
@@ -562,7 +581,7 @@ export default function ModelPerformancePage({
                             showarrow: false,
                             font: {
                               family: 'IBM Plex Mono, monospace',
-                              size: 13,
+                              size: activeMetrics.classes.length > 6 ? 10 : 13,
                               color: val > maxVal * 0.55 ? '#ffffff' : '#0f172a',
                             },
                           };

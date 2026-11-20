@@ -63,6 +63,7 @@ export interface TrainedModelBundle {
   trained_at: string;
   dataset_name: string;
   classes: string[];
+  signal_columns: string[];
   feature_names: string[];
   scaler: ScalerState;
   class_centroids_z: number[][];

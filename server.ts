@@ -129,7 +129,7 @@ app.post('/api/upload', upload.single('file'), (req, res) => {
 // 4. POST /api/analyze — Full DSP + Feature Extraction + ML Prediction
 app.post('/api/analyze', (req, res) => {
   try {
-    const { upload_id, signal_column, model_type, preprocessing } = req.body ?? {};
+    const { upload_id, signal_column, signal_columns, model_type, preprocessing } = req.body ?? {};
     if (!upload_id || typeof upload_id !== 'string') {
       res.status(400).json({ ok: false, error: 'upload_id is required.' });
       return;
@@ -141,6 +141,7 @@ app.post('/api/analyze', (req, res) => {
     const result = analyzeSignal({
       upload_id,
       signal_column,
+      signal_columns: Array.isArray(signal_columns) ? signal_columns : undefined,
       model_type,
       preprocessing,
     });

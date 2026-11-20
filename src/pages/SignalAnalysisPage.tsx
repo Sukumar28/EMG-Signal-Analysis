@@ -46,6 +46,8 @@ const DEFAULT_CONFIG: PreprocessingConfig = {
   window_overlap_pct: 50,
 };
 
+const SAMPLE_CATEGORIES = ['All', 'Baseline', 'Hand & Fingers', 'Wrist & Forearm', 'Upper Limb'] as const;
+
 export default function SignalAnalysisPage({
   modelTrained,
   activeModelType,
@@ -59,9 +61,11 @@ export default function SignalAnalysisPage({
   const [analyzing, setAnalyzing] = useState(false);
   const [uploadData, setUploadData] = useState<UploadResponse | null>(null);
   const [selectedColumn, setSelectedColumn] = useState('');
+  const [selectedChannels, setSelectedChannels] = useState<string[]>([]);
   const [selectedModel, setSelectedModel] = useState<'random_forest' | 'svm'>(activeModelType);
   const [config, setConfig] = useState<PreprocessingConfig>(DEFAULT_CONFIG);
   const [samples, setSamples] = useState<SampleDatasetInfo[]>([]);
+  const [sampleCategory, setSampleCategory] = useState<(typeof SAMPLE_CATEGORIES)[number]>('All');
   const [validationError, setValidationError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -79,6 +83,7 @@ export default function SignalAnalysisPage({
     setValidationError(null);
     const defaultCol = res.numeric_columns[0] ?? '';
     setSelectedColumn(defaultCol);
+    setSelectedChannels(res.numeric_columns);
     if (res.inferred_sampling_frequency) {
       setConfig((prev) => ({
         ...prev,
@@ -86,6 +91,18 @@ export default function SignalAnalysisPage({
         bandpass_high_hz: Math.min(prev.bandpass_high_hz, Math.floor(res.inferred_sampling_frequency! * 0.45)),
       }));
     }
+  };
+
+  const toggleChannel = (col: string) => {
+    setSelectedChannels((prev) => {
+      const exists = prev.includes(col);
+      if (exists && prev.length === 1) return prev; // keep at least 1 channel
+      const next = exists ? prev.filter((c) => c !== col) : [...prev, col];
+      if (!next.includes(selectedColumn)) {
+        setSelectedColumn(next[0]);
+      }
+      return next;
+    });
   };
 
   const handleFileSelected = async (file: File) => {
@@ -140,7 +157,7 @@ export default function SignalAnalysisPage({
     try {
       const res = await loadSampleDataset(filename);
       applyUploadedMetadata(res);
-      onNotify('info', 'Sample recording loaded', `${res.filename} ready for DSP & inference.`);
+      onNotify('info', 'Sample recording loaded', `${res.filename} (${res.numeric_columns.length} channels) ready for analysis.`);
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Could not load sample file.';
       setValidationError(msg);
@@ -182,6 +199,7 @@ export default function SignalAnalysisPage({
       const result = await analyzeEmgSignal({
         upload_id: uploadData.upload_id,
         signal_column: selectedColumn,
+        signal_columns: selectedChannels.length > 0 ? selectedChannels : [selectedColumn],
         model_type: selectedModel,
         preprocessing: config,
       });
@@ -210,6 +228,10 @@ export default function SignalAnalysisPage({
   };
 
   const inferenceSamples = samples.filter((s) => s.type === 'inference');
+  const filteredSamples =
+    sampleCategory === 'All'
+      ? inferenceSamples
+      : inferenceSamples.filter((s) => s.category === sampleCategory);
   const trainingSamples = samples.filter((s) => s.type === 'training');
 
   return (
@@ -219,7 +241,7 @@ export default function SignalAnalysisPage({
           EMG Signal Upload & Processing
         </h1>
         <p className="mt-1 text-sm text-slate-600">
-          Upload raw surface EMG CSV recordings, validate channels and sampling parameters, apply Butterworth & notch filtering, extract time-domain features, and classify hand/wrist movements.
+          Upload single or multi-channel sEMG CSV recordings, configure digital filtering and windowing, extract 7 time-domain features per channel, and classify across all 12 muscle actions.
         </p>
       </div>
 
@@ -232,7 +254,7 @@ export default function SignalAnalysisPage({
                 MODEL NOT TRAINED – Please configure a labelled EMG training dataset.
               </p>
               <p className="mt-0.5 text-xs text-amber-900">
-                You can still upload and preprocess EMG CSVs to inspect waveforms and extracted features, or train the classifier first to enable movement prediction.
+                Train the classifier on the 12-action labelled sEMG dataset or upload your own labelled training CSV before running predictions.
               </p>
             </div>
           </div>
@@ -247,14 +269,13 @@ export default function SignalAnalysisPage({
         </div>
       )}
 
-      {/* Main 2-Column Split: Left Upload & Sample CSVs, Right Signal Processing Parameters */}
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
-        {/* Left: CSV Dropzone + Samples */}
+        {/* Left: CSV Dropzone + All 12 Muscle Action Sample Recordings */}
         <div className="space-y-6 lg:col-span-7">
           <section className="rounded-xl border border-slate-200 bg-white p-6">
             <h2 className="text-base font-semibold text-slate-900">1. Upload EMG CSV File</h2>
             <p className="mt-0.5 text-xs text-slate-500">
-              Supports single or multi-channel numeric EMG recordings with optional timestamps and labels (max 25 MB). Original CSV is preserved untouched.
+              Supports single or 4-channel anatomical sEMG CSV files with optional timestamps and labels (max 25 MB). Original CSV is preserved untouched.
             </p>
 
             <div
@@ -264,7 +285,7 @@ export default function SignalAnalysisPage({
               }}
               onDragLeave={() => setDragActive(false)}
               onDrop={handleDrop}
-              className={`mt-4 flex flex-col items-center justify-center rounded-xl border-2 border-dashed px-6 py-10 text-center transition-colors ${
+              className={`mt-4 flex flex-col items-center justify-center rounded-xl border-2 border-dashed px-6 py-9 text-center transition-colors ${
                 dragActive
                   ? 'border-teal-500 bg-teal-50/50'
                   : 'border-slate-300 bg-slate-50/60 hover:border-slate-400'
@@ -314,7 +335,7 @@ export default function SignalAnalysisPage({
                     <CheckCircle2 className="h-4 w-4 text-teal-600" />
                     <span className="font-mono">{uploadData.filename}</span>
                   </div>
-                  <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500 font-mono">
+                  <div className="flex flex-wrap items-center gap-2 font-mono text-xs text-slate-500">
                     <span>{uploadData.row_count.toLocaleString()} rows</span>
                     <span aria-hidden="true">·</span>
                     <span>{(uploadData.file_size_bytes / 1024).toFixed(1)} KB</span>
@@ -335,11 +356,56 @@ export default function SignalAnalysisPage({
                   </div>
                 )}
 
-                {/* Column & Missing-Value Summary */}
+                {/* Multi-Channel Selection Checkboxes */}
+                {uploadData.numeric_columns.length > 1 && (
+                  <div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-medium text-slate-700">
+                        Active EMG Channels for ML Feature Vector ({selectedChannels.length} selected)
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setSelectedChannels(uploadData.numeric_columns)}
+                        className="text-[11px] font-medium text-teal-700 hover:text-teal-900"
+                      >
+                        Select all
+                      </button>
+                    </div>
+                    <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                      {uploadData.numeric_columns.map((col) => {
+                        const checked = selectedChannels.includes(col);
+                        return (
+                          <label
+                            key={col}
+                            className={`flex cursor-pointer items-center justify-between rounded-lg border px-3 py-2 text-xs transition-colors ${
+                              checked
+                                ? 'border-teal-300 bg-teal-50/50 text-slate-900'
+                                : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
+                            }`}
+                          >
+                            <span className="flex items-center gap-2 truncate font-mono">
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={() => toggleChannel(col)}
+                                className="h-3.5 w-3.5 accent-teal-600"
+                              />
+                              <span className="truncate">{col}</span>
+                            </span>
+                            <span className="ml-2 shrink-0 font-mono text-[10px] text-slate-400">
+                              NaN:{uploadData.missing_summary[col] ?? 0}
+                            </span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
                 <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                   <div>
                     <label htmlFor="signal-col-select" className="block text-xs font-medium text-slate-700">
-                      Target EMG Signal Column
+                      Primary Waveform Visualization Channel
                     </label>
                     <select
                       id="signal-col-select"
@@ -370,55 +436,71 @@ export default function SignalAnalysisPage({
                     </select>
                   </div>
                 </div>
-
-                {uploadData.label_column && uploadData.detected_labels.length > 0 && (
-                  <p className="text-xs text-slate-600">
-                    Detected label column <span className="font-mono font-medium text-slate-900">{uploadData.label_column}</span> with classes:{' '}
-                    <span className="font-medium text-slate-800">{uploadData.detected_labels.join(', ')}</span>. (Inference uses only signal features; labels are ignored during prediction.)
-                  </p>
-                )}
               </div>
             )}
           </section>
 
-          {/* Sample EMG CSVs — Downloadable & One-Click Loadable */}
+          {/* All 12 Muscle Action Sample Recordings */}
           <section className="rounded-xl border border-slate-200 bg-white p-6">
-            <div className="flex items-center justify-between gap-2">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div>
-                <h2 className="text-base font-semibold text-slate-900">Sample EMG Recordings</h2>
+                <h2 className="text-base font-semibold text-slate-900">
+                  Sample EMG Recordings — All 12 Muscle Actions
+                </h2>
                 <p className="mt-0.5 text-xs text-slate-500">
-                  Download genuine sEMG CSV files for inspection or load a test recording directly into the pipeline
+                  4-channel anatomical sEMG test CSVs across baseline, hand/finger, wrist/forearm, and upper-limb actions
                 </p>
               </div>
               {trainingSamples[0] && (
                 <a
                   href={getSampleDownloadUrl(trainingSamples[0].filename)}
                   download
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100 whitespace-nowrap"
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100 whitespace-nowrap shrink-0"
                 >
                   <Download className="h-3.5 w-3.5" />
-                  Download Labelled Training CSV
+                  12-Action Training CSV
                 </a>
               )}
             </div>
 
-            <div className="mt-4 divide-y divide-slate-100 border-t border-slate-100">
-              {inferenceSamples.map((sample) => (
+            {/* Category Filter Tabs */}
+            <div className="mt-4 flex flex-wrap items-center gap-1 rounded-lg bg-slate-100 p-1">
+              {SAMPLE_CATEGORIES.map((cat) => (
+                <button
+                  key={cat}
+                  type="button"
+                  onClick={() => setSampleCategory(cat)}
+                  className={`rounded-md px-2.5 py-1 text-xs font-medium transition-colors whitespace-nowrap ${
+                    sampleCategory === cat
+                      ? 'bg-white text-slate-900 shadow-sm'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  {cat === 'All' ? `All (${inferenceSamples.length})` : cat}
+                </button>
+              ))}
+            </div>
+
+            <div className="mt-3 max-h-[390px] divide-y divide-slate-100 overflow-y-auto border-t border-slate-100 pr-1">
+              {filteredSamples.map((sample) => (
                 <div
                   key={sample.filename}
                   className="flex flex-col gap-2 py-3 sm:flex-row sm:items-center sm:justify-between"
                 >
                   <div className="min-w-0">
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
                       <FileSpreadsheet className="h-4 w-4 shrink-0 text-teal-600" />
-                      <span className="truncate font-mono text-xs font-medium text-slate-900">
-                        {sample.filename}
+                      <span className="text-xs font-semibold text-slate-900">
+                        {sample.muscle_action ?? sample.title}
                       </span>
-                      <span className="text-xs text-slate-400 font-mono shrink-0">
-                        {sample.sampling_frequency} Hz · {sample.duration_seconds}s
+                      <span className="font-mono text-[11px] text-slate-400">
+                        {sample.filename} · {sample.channels ?? 4} ch · {sample.sampling_frequency} Hz
                       </span>
                     </div>
-                    <p className="mt-0.5 pl-6 text-xs text-slate-500">{sample.description}</p>
+                    <p className="mt-0.5 pl-6 text-xs text-slate-500">
+                      {sample.primary_muscles ? `${sample.primary_muscles} — ` : ''}
+                      {sample.description}
+                    </p>
                   </div>
                   <div className="flex items-center gap-2 pl-6 sm:pl-0 shrink-0">
                     <a
@@ -434,7 +516,7 @@ export default function SignalAnalysisPage({
                       onClick={() => handleLoadSample(sample.filename)}
                       className="rounded-lg bg-teal-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-teal-700 disabled:opacity-50 whitespace-nowrap"
                     >
-                      Load Recording
+                      Load
                     </button>
                   </div>
                 </div>
@@ -455,7 +537,6 @@ export default function SignalAnalysisPage({
             </p>
 
             <div className="mt-5 space-y-4">
-              {/* Sampling Frequency */}
               <div>
                 <label htmlFor="fs-input" className="block text-xs font-medium text-slate-700">
                   Sampling Frequency (Hz)
@@ -477,7 +558,6 @@ export default function SignalAnalysisPage({
                 </p>
               </div>
 
-              {/* Bandpass Filter */}
               <div className="space-y-3 border-t border-slate-100 pt-4">
                 <label className="flex items-center justify-between text-xs font-medium text-slate-800">
                   <span>Bandpass Butterworth Filter</span>
@@ -534,7 +614,6 @@ export default function SignalAnalysisPage({
                 )}
               </div>
 
-              {/* Notch Filter */}
               <div className="space-y-3 border-t border-slate-100 pt-4">
                 <label className="flex items-center justify-between text-xs font-medium text-slate-800">
                   <span>Power-Line Notch Filter</span>
@@ -575,7 +654,6 @@ export default function SignalAnalysisPage({
                 )}
               </div>
 
-              {/* Normalization & Windowing */}
               <div className="space-y-3 border-t border-slate-100 pt-4">
                 <div>
                   <label className="block text-xs font-medium text-slate-700">Signal Normalization</label>
@@ -663,7 +741,7 @@ export default function SignalAnalysisPage({
                     <th
                       key={col}
                       className={`px-4 py-2.5 ${
-                        col === selectedColumn ? 'bg-teal-50/70 text-teal-900 font-semibold' : ''
+                        selectedChannels.includes(col) ? 'bg-teal-50/70 font-semibold text-teal-900' : ''
                       }`}
                     >
                       {col}
@@ -679,7 +757,9 @@ export default function SignalAnalysisPage({
                       <td
                         key={col}
                         className={`px-4 py-2 tabular-nums ${
-                          col === selectedColumn ? 'bg-teal-50/30 text-slate-900 font-medium' : 'text-slate-700'
+                          selectedChannels.includes(col)
+                            ? 'bg-teal-50/30 font-medium text-slate-900'
+                            : 'text-slate-700'
                         }`}
                       >
                         {row[col] === '' ? <span className="text-amber-600">NaN</span> : row[col]}

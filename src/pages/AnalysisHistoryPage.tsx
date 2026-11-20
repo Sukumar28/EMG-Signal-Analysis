@@ -146,11 +146,19 @@ export default function AnalysisHistoryPage({
               onChange={(e) => setMovementFilter(e.target.value)}
               className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-800 focus:border-teal-600 focus:outline-none"
             >
-              <option value="ALL">All Movement Classes</option>
+              <option value="ALL">All Muscle Actions (12)</option>
+              <option value="Rest (Baseline)">Rest (Baseline)</option>
               <option value="Hand Open">Hand Open</option>
               <option value="Hand Close">Hand Close</option>
+              <option value="Pinch Grip">Pinch Grip</option>
+              <option value="Pointing Index">Pointing Index</option>
               <option value="Wrist Flexion">Wrist Flexion</option>
               <option value="Wrist Extension">Wrist Extension</option>
+              <option value="Wrist Pronation">Wrist Pronation</option>
+              <option value="Wrist Supination">Wrist Supination</option>
+              <option value="Radial Deviation">Radial Deviation</option>
+              <option value="Ulnar Deviation">Ulnar Deviation</option>
+              <option value="Elbow Flexion">Elbow Flexion</option>
             </select>
           </div>
 

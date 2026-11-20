@@ -72,6 +72,7 @@ export async function uploadCsvFile(file: File): Promise<UploadResponse> {
 export async function analyzeEmgSignal(payload: {
   upload_id: string;
   signal_column: string;
+  signal_columns?: string[];
   model_type?: 'random_forest' | 'svm';
   preprocessing?: Partial<PreprocessingConfig>;
 }): Promise<AnalysisResult> {
@@ -87,6 +88,7 @@ export async function trainEmgModels(payload: {
   upload_id?: string;
   use_bundled_dataset?: boolean;
   signal_column?: string;
+  signal_columns?: string[];
   label_column?: string;
   preprocessing?: Partial<PreprocessingConfig>;
   test_split_ratio?: number;

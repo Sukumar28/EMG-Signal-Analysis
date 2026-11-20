@@ -19,6 +19,7 @@ class PreprocessingConfigSchema(BaseModel):
 class AnalyzeRequest(BaseModel):
     upload_id: str
     signal_column: str
+    signal_columns: Optional[List[str]] = None
     model_type: Optional[Literal["random_forest", "svm"]] = None
     preprocessing: Optional[PreprocessingConfigSchema] = None
 
@@ -27,6 +28,7 @@ class TrainRequest(BaseModel):
     upload_id: Optional[str] = None
     use_bundled_dataset: bool = False
     signal_column: Optional[str] = None
+    signal_columns: Optional[List[str]] = None
     label_column: Optional[str] = None
     preprocessing: Optional[PreprocessingConfigSchema] = None
     test_split_ratio: float = Field(0.25, ge=0.15, le=0.4)

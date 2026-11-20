@@ -173,6 +173,7 @@ export interface ModelPerformanceResponse {
   trained_at?: string;
   dataset_name?: string;
   classes: string[];
+  signal_columns?: string[];
   feature_names?: string[];
   train_windows?: number;
   test_windows?: number;
@@ -194,6 +195,7 @@ export interface DashboardResponse {
     model_trained: boolean;
     model_version: string | null;
     active_model_type: 'random_forest' | 'svm' | null;
+    expected_channels?: string[];
   };
   movement_distribution: { movement: string; count: number }[];
   activity_timeline: { date: string; count: number }[];
@@ -240,9 +242,13 @@ export interface HistoryListItem {
 export interface SampleDatasetInfo {
   filename: string;
   title: string;
+  category?: string;
+  muscle_action?: string;
+  primary_muscles?: string;
   type: 'training' | 'inference';
   sampling_frequency: number;
   duration_seconds: number;
+  channels?: number;
   description: string;
   size_bytes: number;
 }
